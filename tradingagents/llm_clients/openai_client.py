@@ -8,14 +8,6 @@ from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
 
 
-class NormalizedChatOpenAI(ChatOpenAI):
-    def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
-
-    def with_structured_output(self, schema, *, method=None, **kwargs):
-        return super().with_structured_output(schema, method=method or "function_calling", **kwargs)
-
-
 def _input_to_messages(input_: Any) -> list:
     if isinstance(input_, list):
         return input_
@@ -24,12 +16,21 @@ def _input_to_messages(input_: Any) -> list:
     return []
 
 
-class DeepSeekChatOpenAI(NormalizedChatOpenAI):
+class NormalizedChatOpenAI(ChatOpenAI):
+    def invoke(self, input, config=None, **kwargs):
+        return normalize_content(super().invoke(input, config, **kwargs))
+
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        return super().with_structured_output(schema, method=method or "function_calling", **kwargs)
+
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         for message_dict, message in zip(payload.get("messages", []), _input_to_messages(input_)):
             if isinstance(message, AIMessage):
-                reasoning = message.additional_kwargs.get("reasoning_content")
+                reasoning = (
+                    message.additional_kwargs.get("reasoning_content")
+                    or (getattr(message, "response_metadata", {}) or {}).get("reasoning_content")
+                )
                 if reasoning is not None:
                     message_dict["reasoning_content"] = reasoning
         return payload
@@ -47,6 +48,8 @@ class DeepSeekChatOpenAI(NormalizedChatOpenAI):
                 generation.message.additional_kwargs["reasoning_content"] = reasoning
         return chat_result
 
+
+class DeepSeekChatOpenAI(NormalizedChatOpenAI):
     def with_structured_output(self, schema, *, method=None, **kwargs):
         if self.model_name == "deepseek-reasoner":
             raise NotImplementedError("deepseek-reasoner does not support structured output")

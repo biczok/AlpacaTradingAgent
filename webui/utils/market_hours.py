@@ -81,12 +81,32 @@ def _coerce_to_eastern(target_datetime: datetime.datetime = None) -> datetime.da
         return eastern.localize(target_datetime)
     return target_datetime.astimezone(eastern)
 
+def is_market_day(target_datetime: datetime.datetime = None) -> Tuple[bool, str]:
+    """
+    Check if the given datetime falls on a US stock market trading day (weekday and non-holiday).
+    """
+    target_datetime = _coerce_to_eastern(target_datetime)
+    if target_datetime.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        return False, "Market is closed on weekends"
+
+    date_str = target_datetime.strftime("%Y-%m-%d")
+    all_holidays = (
+        US_MARKET_HOLIDAYS_2024
+        + US_MARKET_HOLIDAYS_2025
+        + US_MARKET_HOLIDAYS_2026
+        + US_MARKET_HOLIDAYS_2027
+    )
+    if date_str in all_holidays:
+        return False, f"Market is closed for holiday on {date_str}"
+    return True, "Valid trading day"
+
+
 def validate_market_hours(hours_str: str) -> Tuple[bool, List[int], str]:
     """
     Validate market hours input string.
     
     Args:
-        hours_str: String like "11" or "11,13" representing hours
+        hours_str: String like "9, 10, 11, 13" representing hours
         
     Returns:
         Tuple of (is_valid, parsed_hours_list, error_message)
@@ -112,52 +132,47 @@ def validate_market_hours(hours_str: str) -> Tuple[bool, List[int], str]:
         return True, hours, ""
         
     except ValueError:
-        return False, [], "Please enter valid hour numbers (e.g., 11,13)"
+        return False, [], "Please enter valid hour numbers (e.g., 9,10,11,13)"
 
-def is_market_open(target_datetime: datetime.datetime = None) -> Tuple[bool, str]:
+
+def is_market_open(target_datetime: datetime.datetime = None, include_premarket: bool = True) -> Tuple[bool, str]:
     """
-    Check if the US stock market is open at the given datetime.
+    Check if the US stock market / pre-market analysis window is open at the given datetime.
     
     Args:
         target_datetime: Datetime to check (defaults to current time)
+        include_premarket: Whether to include the 20-min pre-market analysis window (starts 9:10 AM EST)
         
     Returns:
         Tuple of (is_open, reason_if_closed)
     """
     target_datetime = _coerce_to_eastern(target_datetime)
     
-    # Check if it's a weekend
-    if target_datetime.weekday() >= 5:  # Saturday = 5, Sunday = 6
-        return False, "Market is closed on weekends"
+    is_day, reason = is_market_day(target_datetime)
+    if not is_day:
+        return False, reason
     
-    # Check if it's a holiday
-    date_str = target_datetime.strftime("%Y-%m-%d")
-    all_holidays = (
-        US_MARKET_HOLIDAYS_2024
-        + US_MARKET_HOLIDAYS_2025
-        + US_MARKET_HOLIDAYS_2026
-        + US_MARKET_HOLIDAYS_2027
-    )
-    if date_str in all_holidays:
-        return False, f"Market is closed for holiday on {date_str}"
-    
-    # Check if it's within market hours (9:30 AM - 4:00 PM EST/EDT)
-    market_open = target_datetime.replace(hour=9, minute=30, second=0, microsecond=0)
+    # 20 minutes before market open (9:10 AM EST) if pre-market enabled, else 9:30 AM
+    start_min = 10 if include_premarket else 30
+    market_open = target_datetime.replace(hour=9, minute=start_min, second=0, microsecond=0)
     market_close = target_datetime.replace(hour=16, minute=0, second=0, microsecond=0)
     
     if target_datetime < market_open:
-        return False, f"Market opens at 9:30 AM EST/EDT (currently {target_datetime.strftime('%I:%M %p %Z')})"
+        return False, f"Market opens at 9:30 AM EST/EDT (Pre-market window starts at {market_open.strftime('%I:%M %p %Z')})"
     elif target_datetime > market_close:
         return False, f"Market closed at 4:00 PM EST/EDT (currently {target_datetime.strftime('%I:%M %p %Z')})"
     
-    return True, "Market is open"
+    return True, "Market is active"
+
 
 def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime = None) -> datetime.datetime:
     """
     Get the next market datetime for the specified hour.
+    Hour 9 is scheduled at 9:10 AM EST (20 minutes before 9:30 AM market open).
+    Hours 10-16 are scheduled at the top of the hour.
     
     Args:
-        target_hour: Hour to target (e.g., 11 for 11 AM)
+        target_hour: Hour to target (e.g., 9 for 9:10 AM pre-market, 11 for 11:00 AM)
         from_datetime: Starting datetime (defaults to current time)
         
     Returns:
@@ -165,8 +180,9 @@ def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime 
     """
     from_datetime = _coerce_to_eastern(from_datetime)
     
-    # Start with today at the target hour
-    target_dt = from_datetime.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+    # 20 minutes before open for hour 9 (9:10 AM EST), top of hour for other hours
+    target_minute = 10 if target_hour == 9 else 0
+    target_dt = from_datetime.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
     
     # If the target time today has already passed, start with tomorrow
     if target_dt <= from_datetime:
@@ -177,8 +193,8 @@ def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime 
     attempts = 0
     
     while attempts < max_attempts:
-        is_open, reason = is_market_open(target_dt)
-        if is_open:
+        is_day, reason = is_market_day(target_dt)
+        if is_day:
             return target_dt
         
         # Move to next day
@@ -188,12 +204,13 @@ def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime 
     # Fallback - return the target datetime even if we couldn't validate
     return target_dt
 
+
 def format_market_hours_info(hours: List[int]) -> Dict[str, Any]:
     """
     Format market hours information for display.
     
     Args:
-        hours: List of hours (e.g., [11, 13])
+        hours: List of hours (e.g., [9, 10, 11, 13])
         
     Returns:
         Dictionary with formatted information
@@ -204,24 +221,25 @@ def format_market_hours_info(hours: List[int]) -> Dict[str, Any]:
     # Format hours for display
     formatted_hours = []
     for hour in sorted(hours):
-        if hour == 0:
-            formatted_hours.append("12:00 AM")
-        elif hour < 12:
-            formatted_hours.append(f"{hour}:00 AM")
+        if hour == 9:
+            formatted_hours.append("9:10 AM (Pre-Market 20m before open)")
         elif hour == 12:
             formatted_hours.append("12:00 PM")
+        elif hour < 12:
+            formatted_hours.append(f"{hour}:00 AM")
         else:
             formatted_hours.append(f"{hour-12}:00 PM")
     
-    hours_str = " and ".join(formatted_hours)
+    hours_str = "; ".join(formatted_hours)
     
     # Calculate next execution times
     next_executions = []
-    for hour in hours:
+    sorted_hours = sorted(hours)
+    for idx, hour in enumerate(sorted_hours):
         next_dt = get_next_market_datetime(hour)
         next_executions.append({
             "hour": hour,
-            "formatted_hour": formatted_hours[hours.index(hour)],
+            "formatted_hour": formatted_hours[idx],
             "next_datetime": next_dt,
             "next_formatted": next_dt.strftime("%A, %B %d at %I:%M %p %Z")
         })
@@ -231,4 +249,4 @@ def format_market_hours_info(hours: List[int]) -> Dict[str, Any]:
         "formatted_hours": hours_str,
         "next_executions": next_executions,
         "market_timezone": "US/Eastern"
-    } 
+    }

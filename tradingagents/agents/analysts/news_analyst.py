@@ -129,9 +129,15 @@ def create_news_analyst(llm, toolkit):
         iteration_count = 0
 
         # Handle iterative tool calls until the model stops requesting them
-        while tools and getattr(result, "additional_kwargs", {}).get("tool_calls") and iteration_count < max_tool_iterations:
+        while tools and (getattr(result, "additional_kwargs", {}).get("tool_calls") or getattr(result, "tool_calls", None)) and iteration_count < max_tool_iterations:
             iteration_count += 1
-            for tool_call in result.additional_kwargs["tool_calls"]:
+            tool_calls = (
+                getattr(result, "additional_kwargs", {}).get("tool_calls")
+                or getattr(result, "tool_calls", None)
+                or []
+            )
+            messages_history.append(result)
+            for tool_call in tool_calls:
                 # Handle different tool call structures
                 if isinstance(tool_call, dict):
                     tool_name = tool_call.get("name") or tool_call.get("function", {}).get("name")
@@ -175,18 +181,16 @@ def create_news_analyst(llm, toolkit):
                         except Exception as tool_err:
                             tool_result = f"Error running tool '{tool_name}': {str(tool_err)}"
 
-                # Append the assistant tool call and tool result messages so the LLM can continue the conversation
-                tool_call_id = tool_call.get("id") or tool_call.get("tool_call_id")
-                ai_tool_call_msg = AIMessage(
-                    content="",
-                    additional_kwargs={"tool_calls": [tool_call]},
+                # Append tool result message with matching tool_call_id
+                tool_call_id = (
+                    tool_call.get("id") or tool_call.get("tool_call_id")
+                    if isinstance(tool_call, dict)
+                    else getattr(tool_call, "id", None)
                 )
                 tool_msg = ToolMessage(
                     content=str(tool_result),
-                    tool_call_id=tool_call_id,
+                    tool_call_id=tool_call_id or f"call_{iteration_count}",
                 )
-
-                messages_history.append(ai_tool_call_msg)
                 messages_history.append(tool_msg)
 
             # Ask the LLM to continue with the new context

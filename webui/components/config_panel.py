@@ -11,6 +11,7 @@ from tradingagents.openai_model_registry import (
     get_llm_provider_options,
     get_model_options_for_provider,
 )
+from webui.utils.storage import DEFAULT_SETTINGS
 
 
 ANALYSTS = [
@@ -323,7 +324,7 @@ def _core_setup():
                         dcc.Input(
                             id="ticker-input",
                             type="hidden",
-                            value="NVDA, AMD, TSLA",
+                            value=DEFAULT_SETTINGS.get("ticker_input", "INTC, GOOG, AMD, SOXX, SHLD"),
                         ),
                         html.Div(id="symbol-search-status", className="symbol-search-status"),
                     ],
@@ -346,7 +347,7 @@ def _core_setup():
                                 {"label": "Medium", "value": "Medium"},
                                 {"label": "Deep", "value": "Deep"},
                             ],
-                            value="Shallow",
+                            value=DEFAULT_SETTINGS.get("research_depth", "Shallow"),
                             inline=True,
                             className="segmented-radio",
                         ),
@@ -362,7 +363,7 @@ def _core_setup():
                         dbc.Switch(
                             id="allow-shorts",
                             label="Allow shorts",
-                            value=False,
+                            value=DEFAULT_SETTINGS.get("allow_shorts", False),
                             className="config-switch",
                         ),
                         className="config-toggle-tile",
@@ -385,7 +386,7 @@ def _schedule_and_trading():
                         dbc.Switch(
                             id="loop-enabled",
                             label="Loop mode",
-                            value=False,
+                            value=DEFAULT_SETTINGS.get("loop_enabled", False),
                             className="config-switch",
                         ),
                         className="config-toggle-tile",
@@ -396,7 +397,7 @@ def _schedule_and_trading():
                             id="loop-interval",
                             type="number",
                             placeholder="60",
-                            value=60,
+                            value=DEFAULT_SETTINGS.get("loop_interval", 60),
                             min=1,
                             max=1440,
                             className="config-input",
@@ -412,7 +413,7 @@ def _schedule_and_trading():
                         dbc.Switch(
                             id="market-hour-enabled",
                             label="Run at market hour",
-                            value=False,
+                            value=DEFAULT_SETTINGS.get("market_hour_enabled", True),
                             className="config-switch",
                         ),
                         className="config-toggle-tile",
@@ -422,8 +423,8 @@ def _schedule_and_trading():
                         dbc.Input(
                             id="market-hours-input",
                             type="text",
-                            placeholder="11,13",
-                            value="",
+                            placeholder="9, 10, 11, 12, 13, 14, 15",
+                            value=DEFAULT_SETTINGS.get("market_hours_input", "9, 10, 11, 12, 13, 14, 15"),
                             className="config-input",
                         ),
                         "calendar-days",
@@ -439,7 +440,7 @@ def _schedule_and_trading():
                         dbc.Switch(
                             id="trade-after-analyze",
                             label="Place order after analysis",
-                            value=False,
+                            value=DEFAULT_SETTINGS.get("trade_after_analyze", True),
                             className="config-switch",
                         ),
                         className="config-toggle-tile",
@@ -453,7 +454,7 @@ def _schedule_and_trading():
                                     id="trade-dollar-amount",
                                     type="number",
                                     placeholder="4500",
-                                    value=4500,
+                                    value=DEFAULT_SETTINGS.get("trade_dollar_amount", 4500),
                                     min=1,
                                     max=10000000,
                                     className="config-input",

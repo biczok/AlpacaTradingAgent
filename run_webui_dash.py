@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument(
         "--server-name",
         type=str,
-        default="127.0.0.1",
+        default="0.0.0.0",
         help="Server name to run the app on",
     )
     

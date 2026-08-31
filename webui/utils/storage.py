@@ -1,31 +1,39 @@
-"""
-Storage utility for persisting user settings in localStorage
-"""
-
+import os
 from typing import Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("true", "1", "yes", "on")
+
 
 # Default settings structure
 DEFAULT_SETTINGS = {
-    "ticker_input": "NVDA, AMD, TSLA",
+    "ticker_input": os.getenv("DEFAULT_TICKERS", "INTC, GOOG, AMD, SOXX, SHLD"),
     "analyst_market": True,
     "analyst_social": True,
     "analyst_news": True,
     "analyst_fundamentals": True,
     "analyst_macro": True,
-    "research_depth": "Shallow",
-    "allow_shorts": False,
-    "loop_enabled": False,
-    "loop_interval": 60,
-    "market_hour_enabled": False,
-    "market_hours_input": "",
-    "trade_after_analyze": False,
-    "trade_dollar_amount": 4500,
-    "llm_provider": "openai",
-    "backend_url": "",
+    "research_depth": os.getenv("RESEARCH_DEPTH", "Shallow"),
+    "allow_shorts": _env_bool("ALLOW_SHORTS", False),
+    "loop_enabled": _env_bool("LOOP_ENABLED", False),
+    "loop_interval": int(os.getenv("LOOP_INTERVAL", "60")),
+    "market_hour_enabled": _env_bool("MARKET_HOUR_ENABLED", True),
+    "market_hours_input": os.getenv("MARKET_HOURS_INPUT", "9, 10, 11, 12, 13, 14, 15"),
+    "trade_after_analyze": _env_bool("TRADE_AFTER_ANALYZE", True),
+    "trade_dollar_amount": int(os.getenv("TRADE_DOLLAR_AMOUNT", "4500")),
+    "llm_provider": os.getenv("LLM_PROVIDER", "google"),
+    "backend_url": os.getenv("BACKEND_URL", ""),
     "output_language": "English",
     "checkpoint_enabled": False,
-    "quick_llm": "gpt-5.4-nano",
-    "deep_llm": "gpt-5.4-mini",
+    "quick_llm": os.getenv("QUICK_THINK_LLM", "gemini-2.5-flash"),
+    "deep_llm": os.getenv("DEEP_THINK_LLM", "gemini-2.5-flash"),
     "quick_llm_custom_model": "",
     "deep_llm_custom_model": "",
     "google_thinking_level": "",
