@@ -72,6 +72,17 @@ class GPT5ChatModel(BaseChatModel):
     @property
     def _llm_type(self) -> str:
         return "openai-responses-chat"
+
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        """Prevent LangChain from binding an incompatible function tool.
+
+        The Responses API path currently supports regular text and explicit
+        tools, but not LangChain's structured-output tool binding for
+        reasoning models. Callers already provide a free-text fallback.
+        """
+        raise NotImplementedError(
+            "Structured output is not supported by the GPT-5 Responses API wrapper"
+        )
     
     @property
     def _identifying_params(self) -> Dict[str, Any]:
