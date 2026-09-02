@@ -483,7 +483,7 @@ def _model_setup():
                         dbc.Select(
                             id="llm-provider",
                             options=get_llm_provider_options(),
-                            value="openai",
+                            value=DEFAULT_SETTINGS.get("llm_provider", "openai"),
                             className="config-select",
                         ),
                         "network-wired",

@@ -15,6 +15,15 @@ def _parse_symbols(value):
 def register_storage_callbacks(app):
     """Register storage-related callbacks"""
 
+    @app.callback(
+        Output("llm-provider", "value"),
+        Input("settings-store", "data"),
+    )
+    def load_llm_provider(settings):
+        """Restore the persisted provider, falling back to the environment default."""
+        defaults = get_default_settings()
+        return (settings or {}).get("llm_provider") or defaults["llm_provider"]
+
     # Callback to save settings to localStorage when they change
     @app.callback(
         Output("settings-store", "data"),
