@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 def _utc_now_iso() -> str:
@@ -432,6 +432,187 @@ class RunAuditLogger:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as f:
             json.dump(run_data, f, indent=2, ensure_ascii=False)
+
+
+_REPORT_CONTENT_KEYS = (
+    "market_report",
+    "sentiment_report",
+    "news_report",
+    "fundamentals_report",
+    "macro_report",
+    "trader_investment_plan",
+    "final_trade_decision",
+    "investment_plan",
+)
+
+
+def _runs_dir(symbol: str, eval_results_dir: str) -> Path:
+    return (
+        Path(eval_results_dir)
+        / _sanitize_for_path(symbol or "unknown")
+        / "TradingAgentsStrategy_logs"
+        / "runs"
+    )
+
+
+def _payload_has_reports(payload: Dict[str, Any]) -> bool:
+    final_state = (payload.get("snapshots") or {}).get("final_state")
+    if isinstance(final_state, dict) and any(final_state.get(key) for key in _REPORT_CONTENT_KEYS):
+        return True
+    if int((payload.get("summary") or {}).get("agent_output_events", 0) or 0) > 0:
+        return True
+    for event in payload.get("events") or []:
+        if event.get("type") == "agent_output":
+            return True
+    return False
+
+
+def list_symbol_runs(
+    symbol: str,
+    eval_results_dir: str = "eval_results",
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Return newest-first summaries of persisted runs that contain reports."""
+    runs_dir = _runs_dir(symbol, eval_results_dir)
+    if not runs_dir.is_dir():
+        return []
+
+    summaries: List[Dict[str, Any]] = []
+    for path in runs_dir.glob("*.json"):
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not _payload_has_reports(payload):
+            continue
+        summaries.append(
+            {
+                "run_id": str(payload.get("run_id") or path.stem),
+                "symbol": str(payload.get("symbol") or symbol),
+                "trade_date": str(payload.get("trade_date") or ""),
+                "started_at": str(payload.get("started_at") or ""),
+                "ended_at": str(payload.get("ended_at") or ""),
+                "status": str(payload.get("status") or ""),
+                "final_signal": str((payload.get("summary") or {}).get("final_signal") or ""),
+                "file_stem": path.stem,
+            }
+        )
+
+    summaries.sort(key=lambda item: item.get("started_at") or "", reverse=True)
+    return summaries[: max(int(limit), 0)]
+
+
+def load_run_payload(
+    symbol: str,
+    run_id: str,
+    eval_results_dir: str = "eval_results",
+) -> Optional[Dict[str, Any]]:
+    """Load one persisted run JSON by run_id or filename stem."""
+    if not run_id:
+        return None
+
+    runs_dir = _runs_dir(symbol, eval_results_dir)
+    if not runs_dir.is_dir():
+        return None
+
+    direct = runs_dir / f"{run_id}.json"
+    candidates = [direct] if direct.is_file() else []
+    if not candidates:
+        candidates = sorted(runs_dir.glob("*.json"))
+
+    for path in candidates:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if path.stem == run_id or str(payload.get("run_id") or "") == str(run_id):
+            return payload
+    return None
+
+
+def extract_reports_from_run(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull UI-ready report text, debate states, and timestamps from a run log."""
+    started_at = str((payload or {}).get("started_at") or "")
+    ended_at = str((payload or {}).get("ended_at") or "")
+    fallback_time = ended_at or started_at
+    reports: Dict[str, Any] = {}
+    timestamps: Dict[str, str] = {}
+
+    final_state = ((payload or {}).get("snapshots") or {}).get("final_state")
+    if not isinstance(final_state, dict):
+        final_state = {}
+
+    for key in _REPORT_CONTENT_KEYS:
+        value = final_state.get(key)
+        if value:
+            reports[key] = value
+
+    debate_state = final_state.get("investment_debate_state")
+    if not isinstance(debate_state, dict):
+        debate_state = None
+    risk_state = final_state.get("risk_debate_state")
+    if not isinstance(risk_state, dict):
+        risk_state = None
+
+    if debate_state:
+        judge = debate_state.get("judge_decision")
+        if judge:
+            reports["research_manager_report"] = judge
+        elif final_state.get("investment_plan"):
+            reports["research_manager_report"] = final_state.get("investment_plan")
+    elif final_state.get("investment_plan"):
+        reports["research_manager_report"] = final_state.get("investment_plan")
+
+    output_type_map = {
+        "market_report": "market_report",
+        "sentiment_report": "sentiment_report",
+        "news_report": "news_report",
+        "fundamentals_report": "fundamentals_report",
+        "macro_report": "macro_report",
+        "trader_investment_plan": "trader_investment_plan",
+        "final_trade_decision": "final_trade_decision",
+        "investment_plan": "research_manager_report",
+        "investment_debate_response": "researcher_debate",
+        "risk_debate_response": "risk_debate",
+    }
+
+    for event in (payload or {}).get("events") or []:
+        if event.get("type") != "agent_output":
+            continue
+        event_payload = event.get("payload") or {}
+        mapped = output_type_map.get(str(event_payload.get("output_type") or ""))
+        if not mapped:
+            continue
+        content = event_payload.get("content")
+        if content and mapped not in reports:
+            reports[mapped] = content
+        event_time = str(event.get("timestamp") or "")
+        if event_time:
+            timestamps[mapped] = event_time
+
+    for key in list(reports):
+        timestamps.setdefault(key, fallback_time)
+    if debate_state:
+        timestamps.setdefault("researcher_debate", timestamps.get("research_manager_report") or fallback_time)
+    if risk_state:
+        timestamps.setdefault("risk_debate", timestamps.get("final_trade_decision") or fallback_time)
+
+    return {
+        "run_id": str((payload or {}).get("run_id") or ""),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "trade_date": str((payload or {}).get("trade_date") or ""),
+        "status": str((payload or {}).get("status") or ""),
+        "final_signal": str(((payload or {}).get("summary") or {}).get("final_signal") or ""),
+        "reports": reports,
+        "investment_debate_state": debate_state,
+        "risk_debate_state": risk_state,
+        "timestamps": timestamps,
+    }
 
 
 def load_final_state_snapshot(

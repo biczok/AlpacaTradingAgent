@@ -11,6 +11,11 @@ from webui.components.ui import render_researcher_debate, render_risk_debate
 from webui.utils.report_validator import validate_reports_for_ui
 from webui.utils.prompt_capture import get_agent_prompt
 from webui.utils.report_rendering import create_rich_report_content
+from webui.utils.report_history import (
+    build_history_options,
+    create_generated_at_badge,
+    load_historical_view,
+)
 
 
 def _is_table_row(line):
@@ -146,6 +151,37 @@ def normalize_market_markdown_sections(content):
     return normalized.strip()
 
 
+def _parse_ticker_symbols(value):
+    return [symbol.strip() for symbol in (value or "").replace(";", ",").split(",") if symbol.strip()]
+
+
+def resolve_report_symbol(active_page, ticker_value=None):
+    """Resolve the symbol currently shown in the reports panel."""
+    symbols = list(app_state.symbol_states.keys()) if app_state.symbol_states else []
+    if symbols and active_page and 1 <= active_page <= len(symbols):
+        return symbols[active_page - 1]
+    if app_state.current_symbol:
+        return app_state.current_symbol
+    parsed = _parse_ticker_symbols(ticker_value)
+    return parsed[0] if parsed else None
+
+
+def _live_generated_at(state, report_type):
+    if not state:
+        return None
+    timestamps = state.get("report_timestamps") or {}
+    if report_type and timestamps.get(report_type):
+        return timestamps[report_type]
+    return state.get("session_start_time")
+
+
+def _with_generated_at(body, generated_at):
+    badge = create_generated_at_badge(generated_at)
+    if not badge:
+        return body
+    return html.Div([html.Div(badge, className="mb-2"), body])
+
+
 def create_symbol_button(symbol, index, is_active=False):
     """Create a symbol button for pagination"""
     return dbc.Button(
@@ -157,9 +193,15 @@ def create_symbol_button(symbol, index, is_active=False):
     )
 
 
-def create_markdown_content(content, default_message="No content available yet.", report_type=None):
+def create_markdown_content(
+    content,
+    default_message="No content available yet.",
+    report_type=None,
+    generated_at=None,
+    show_debug_buttons=True,
+):
     """Create a markdown component with enhanced styling and conditional prompt button"""
-    has_content = content and content.strip() != "" and content != default_message
+    has_content = content and str(content).strip() != "" and content != default_message
     
     # Check if this is a loading or default message
     # More precise loading detection - only flag as loading if content is clearly a status message
@@ -202,21 +244,33 @@ def create_markdown_content(content, default_message="No content available yet."
         }
     )
     
-    # If we have actual content and a report type, add a prompt button
-    if has_content and not is_loading_message and report_type:
+    generated_badge = None
+    if has_content and not is_loading_message:
+        generated_badge = create_generated_at_badge(generated_at)
+
+    debug_buttons = None
+    if has_content and not is_loading_message and report_type and show_debug_buttons:
         from webui.components.prompt_modal import create_show_prompt_button
         from webui.components.tool_outputs_modal import create_show_tool_outputs_button
-        
-        return html.Div([
-            html.Div([
-                html.Div([
-                    create_show_prompt_button(report_type, className="me-2"),
-                    create_show_tool_outputs_button(report_type)
-                ], className="text-end mb-2 report-debug-buttons")
-            ]),
-            report_component
-        ])
-    
+
+        debug_buttons = html.Div(
+            [
+                create_show_prompt_button(report_type, className="me-2"),
+                create_show_tool_outputs_button(report_type),
+            ],
+            className="text-end report-debug-buttons",
+        )
+
+    if generated_badge or debug_buttons:
+        toolbar = html.Div(
+            [
+                generated_badge or html.Div(),
+                debug_buttons or html.Div(),
+            ],
+            className="d-flex justify-content-between align-items-center mb-2 report-toolbar",
+        )
+        return html.Div([toolbar, report_component])
+
     return report_component
 
 
@@ -315,27 +369,39 @@ def register_report_callbacks(app):
     @app.callback(
         Output("researcher-debate-tab-content", "children"),
         [Input("report-pagination", "active_page"),
-         Input("medium-refresh-interval", "n_intervals")]
+         Input("medium-refresh-interval", "n_intervals"),
+         Input("report-history-selector", "value")],
+        [State("ticker-input", "value")]
     )
-    def update_researcher_debate(active_page, n_intervals):
+    def update_researcher_debate(active_page, n_intervals, history_value, ticker_value):
         """Update the researcher debate tab with Dash components and prompt buttons"""
-        if not app_state.symbol_states or not active_page:
-            return create_markdown_content("", "No researcher debate available yet.")
+        symbol = resolve_report_symbol(active_page, ticker_value)
+        generated_at = None
+        debate_state = None
+        viewing_history = bool(history_value and history_value != "current")
 
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
+        if viewing_history:
+            view = load_historical_view(symbol, history_value)
+            if not view or not view.get("investment_debate_state"):
+                return create_markdown_content("", "No researcher debate was saved for this past run.")
+            debate_state = view["investment_debate_state"]
+            generated_at = (view.get("timestamps") or {}).get("researcher_debate") or view.get("started_at")
+        else:
+            if not app_state.symbol_states or not active_page:
+                return create_markdown_content("", "No researcher debate available yet.")
 
-        symbol = symbols_list[active_page - 1]
-        state = app_state.get_state(symbol)
-        
-        if not state:
-            return create_markdown_content("", f"No active analysis for {symbol}. Researcher debate will appear here once analysis starts.")
+            # Safeguard against accessing invalid page index (e.g., after page refresh)
+            symbols_list = list(app_state.symbol_states.keys())
+            if active_page > len(symbols_list):
+                return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
 
-        # Get the debate state
-        debate_state = state.get("investment_debate_state")
-        
+            state = app_state.get_state(symbol)
+            if not state:
+                return create_markdown_content("", f"No active analysis for {symbol}. Researcher debate will appear here once analysis starts.")
+
+            debate_state = state.get("investment_debate_state")
+            generated_at = _live_generated_at(state, "researcher_debate")
+
         if not debate_state or not debate_state.get("history"):
             return create_markdown_content("", "Researcher debate will begin once analysis starts.")
 
@@ -479,42 +545,57 @@ def register_report_callbacks(app):
         if not debate_components:
             return create_markdown_content("", "Researcher debate will begin once analysis starts.")
         
-        return html.Div(
-            debate_components,
-            style={
-                "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
-                "border-radius": "8px",
-                "padding": "1.5rem",
-                "min-height": "1000px",
-                "maxHeight": "600px",
-                "overflowY": "auto"
-            }
+        return _with_generated_at(
+            html.Div(
+                debate_components,
+                style={
+                    "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
+                    "border-radius": "8px",
+                    "padding": "1.5rem",
+                    "min-height": "1000px",
+                    "maxHeight": "600px",
+                    "overflowY": "auto"
+                }
+            ),
+            generated_at,
         )
 
     @app.callback(
         Output("risk-debate-tab-content", "children"),
         [Input("report-pagination", "active_page"),
-         Input("medium-refresh-interval", "n_intervals")]
+         Input("medium-refresh-interval", "n_intervals"),
+         Input("report-history-selector", "value")],
+        [State("ticker-input", "value")]
     )
-    def update_risk_debate(active_page, n_intervals):
+    def update_risk_debate(active_page, n_intervals, history_value, ticker_value):
         """Update the risk debate tab with Dash components and prompt buttons"""
-        if not app_state.symbol_states or not active_page:
-            return create_markdown_content("", "No risk debate available yet.")
+        symbol = resolve_report_symbol(active_page, ticker_value)
+        generated_at = None
+        risk_debate_state = None
+        viewing_history = bool(history_value and history_value != "current")
 
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
+        if viewing_history:
+            view = load_historical_view(symbol, history_value)
+            if not view or not view.get("risk_debate_state"):
+                return create_markdown_content("", "No risk debate was saved for this past run.")
+            risk_debate_state = view["risk_debate_state"]
+            generated_at = (view.get("timestamps") or {}).get("risk_debate") or view.get("started_at")
+        else:
+            if not app_state.symbol_states or not active_page:
+                return create_markdown_content("", "No risk debate available yet.")
 
-        symbol = symbols_list[active_page - 1]
-        state = app_state.get_state(symbol)
-        
-        if not state:
-            return create_markdown_content("", f"No active analysis for {symbol}. Risk debate will appear here once analysis starts.")
+            # Safeguard against accessing invalid page index (e.g., after page refresh)
+            symbols_list = list(app_state.symbol_states.keys())
+            if active_page > len(symbols_list):
+                return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
 
-        # Get the risk debate state
-        risk_debate_state = state.get("risk_debate_state")
-        
+            state = app_state.get_state(symbol)
+            if not state:
+                return create_markdown_content("", f"No active analysis for {symbol}. Risk debate will appear here once analysis starts.")
+
+            risk_debate_state = state.get("risk_debate_state")
+            generated_at = _live_generated_at(state, "risk_debate")
+
         if not risk_debate_state or not risk_debate_state.get("history"):
             return create_markdown_content("", "Risk debate will begin once analysis starts.")
 
@@ -718,17 +799,42 @@ def register_report_callbacks(app):
         if not debate_components:
             return create_markdown_content("", "Risk debate will begin once analysis starts.")
         
-        return html.Div(
-            debate_components,
-            style={
-                "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
-                "border-radius": "8px",
-                "padding": "1.5rem",
-                "min-height": "1000px",
-                "maxHeight": "600px",
-                "overflowY": "auto"
-            }
+        return _with_generated_at(
+            html.Div(
+                debate_components,
+                style={
+                    "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
+                    "border-radius": "8px",
+                    "padding": "1.5rem",
+                    "min-height": "1000px",
+                    "maxHeight": "600px",
+                    "overflowY": "auto"
+                }
+            ),
+            generated_at,
         )
+
+    @app.callback(
+        [Output("report-history-selector", "options"),
+         Output("report-history-selector", "value")],
+        [Input("report-pagination", "active_page"),
+         Input("medium-refresh-interval", "n_intervals"),
+         Input("ticker-input", "value")],
+        [State("report-history-selector", "value")]
+    )
+    def update_report_history_options(active_page, n_intervals, ticker_value, current_value):
+        """Populate the past-report picker for the symbol currently in view."""
+        symbol = resolve_report_symbol(active_page, ticker_value)
+        options = build_history_options(symbol)
+        values = {option["value"] for option in options}
+        triggered = ctx.triggered_id if ctx.triggered else None
+        if triggered == "report-pagination":
+            selected = "current"
+        elif current_value in values:
+            selected = current_value
+        else:
+            selected = "current"
+        return options, selected
 
     @app.callback(
         [Output("market-analysis-tab-content", "children"),
@@ -740,12 +846,58 @@ def register_report_callbacks(app):
          Output("trader-plan-tab-content", "children"),
          Output("final-decision-tab-content", "children")],
         [Input("report-pagination", "active_page"),
-         Input("medium-refresh-interval", "n_intervals")]
+         Input("medium-refresh-interval", "n_intervals"),
+         Input("report-history-selector", "value")],
+        [State("ticker-input", "value")]
     )
-    def update_tabs_content(active_page, n_intervals):
+    def update_tabs_content(active_page, n_intervals, history_value, ticker_value):
         """Update the content of all tabs with validation to ensure complete reports"""
         # print(f"[REPORTS] Called with active_page={active_page}, symbol_states={list(app_state.symbol_states.keys()) if app_state.symbol_states else []}")
-        
+        symbol = resolve_report_symbol(active_page, ticker_value)
+
+        if history_value and history_value != "current":
+            view = load_historical_view(symbol, history_value)
+            if not view:
+                empty = create_markdown_content("", "Could not load that past report.")
+                return [empty] * 8
+            reports = view.get("reports") or {}
+            stamps = view.get("timestamps") or {}
+            fallback = view.get("started_at")
+            return (
+                create_markdown_content(
+                    reports.get("market_report"), "No market analysis available yet.",
+                    "market_report", stamps.get("market_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("sentiment_report"), "No sentiment analysis available yet.",
+                    "sentiment_report", stamps.get("sentiment_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("news_report"), "No news analysis available yet.",
+                    "news_report", stamps.get("news_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("fundamentals_report"), "No fundamentals analysis available yet.",
+                    "fundamentals_report", stamps.get("fundamentals_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("macro_report"), "No macro analysis available yet.",
+                    "macro_report", stamps.get("macro_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("research_manager_report"), "No research manager decision available yet.",
+                    "research_manager_report", stamps.get("research_manager_report") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("trader_investment_plan"), "No trader report available yet.",
+                    "trader_investment_plan", stamps.get("trader_investment_plan") or fallback, False,
+                ),
+                create_markdown_content(
+                    reports.get("final_trade_decision"), "No final decision available yet.",
+                    "final_trade_decision", stamps.get("final_trade_decision") or fallback, False,
+                ),
+            )
+
         if not app_state.symbol_states or not active_page:
             # print(f"[REPORTS] No symbol states or no active page, returning default content")
             return [create_markdown_content("", "No analysis available yet.")] * 8
@@ -754,8 +906,6 @@ def register_report_callbacks(app):
         symbols_list = list(app_state.symbol_states.keys())
         if active_page > len(symbols_list):
             return [create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")] * 8
-        
-        symbol = symbols_list[active_page - 1]
         # print(f"[REPORTS] Selected symbol: {symbol} (page {active_page})")
         state = app_state.get_state(symbol)
         
@@ -820,14 +970,14 @@ def register_report_callbacks(app):
         portfolio_report = reports.get("final_trade_decision") or "No final decision available yet."
         
         return (
-            create_markdown_content(market_report, "No market analysis available yet.", "market_report"),
-            create_markdown_content(sentiment_report, "No sentiment analysis available yet.", "sentiment_report"),
-            create_markdown_content(news_report, "No news analysis available yet.", "news_report"),
-            create_markdown_content(fundamentals_report, "No fundamentals analysis available yet.", "fundamentals_report"),
-            create_markdown_content(macro_report, "No macro analysis available yet.", "macro_report"),
-            create_markdown_content(research_manager_report, "No research manager decision available yet.", "research_manager_report"),
-            create_markdown_content(trader_report, "No trader report available yet.", "trader_investment_plan"),
-            create_markdown_content(portfolio_report, "No final decision available yet.", "final_trade_decision")
+            create_markdown_content(market_report, "No market analysis available yet.", "market_report", _live_generated_at(state, "market_report")),
+            create_markdown_content(sentiment_report, "No sentiment analysis available yet.", "sentiment_report", _live_generated_at(state, "sentiment_report")),
+            create_markdown_content(news_report, "No news analysis available yet.", "news_report", _live_generated_at(state, "news_report")),
+            create_markdown_content(fundamentals_report, "No fundamentals analysis available yet.", "fundamentals_report", _live_generated_at(state, "fundamentals_report")),
+            create_markdown_content(macro_report, "No macro analysis available yet.", "macro_report", _live_generated_at(state, "macro_report")),
+            create_markdown_content(research_manager_report, "No research manager decision available yet.", "research_manager_report", _live_generated_at(state, "research_manager_report")),
+            create_markdown_content(trader_report, "No trader report available yet.", "trader_investment_plan", _live_generated_at(state, "trader_investment_plan")),
+            create_markdown_content(portfolio_report, "No final decision available yet.", "final_trade_decision", _live_generated_at(state, "final_trade_decision"))
         )
 
     @app.callback(

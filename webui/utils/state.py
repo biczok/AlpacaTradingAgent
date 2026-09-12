@@ -264,6 +264,18 @@ class AppState:
             state["agent_prompts"][report_type] = prompt_text
             print(f"[STATE - {symbol}] Stored prompt for {report_type} ({len(prompt_text)} chars)")
 
+    def _stamp_report(self, state, *report_types):
+        """Record when one or more report sections were last written."""
+        import time
+
+        if not state:
+            return
+        stamped_at = time.time()
+        timestamps = state.setdefault("report_timestamps", {})
+        for report_type in report_types:
+            if report_type:
+                timestamps[report_type] = stamped_at
+
     def get_agent_prompt(self, report_type, symbol=None):
         """Get the prompt used by an agent for a specific report type."""
         if symbol is None:
@@ -646,7 +658,7 @@ class AppState:
                             continue
                     
                     state["current_reports"][report_type] = new_report
-                    state.setdefault("report_timestamps", {})[report_type] = current_time
+                    self._stamp_report(state, report_type)
                     state[update_count_key] = current_count + 1
                     
                     # Count unique non-empty reports across all symbols
@@ -720,6 +732,7 @@ class AppState:
                     state["current_reports"]["bull_report"] = latest_bull_message
                 else:
                     state["current_reports"]["bull_report"] = debate_state["bull_history"]
+                self._stamp_report(state, "bull_report", "researcher_debate")
                 self.update_reports_count()
                 ui_update_needed = True
             
@@ -735,6 +748,7 @@ class AppState:
                     state["current_reports"]["bear_report"] = latest_bear_message
                 else:
                     state["current_reports"]["bear_report"] = debate_state["bear_history"]
+                self._stamp_report(state, "bear_report", "researcher_debate")
                 self.update_reports_count()
                 ui_update_needed = True
             
@@ -745,12 +759,14 @@ class AppState:
                 self.update_agent_status("Research Manager", "completed", analyzing_symbol)
                 state["current_reports"]["research_manager_report"] = debate_state["judge_decision"]
                 state["current_reports"]["investment_plan"] = debate_state["judge_decision"]
+                self._stamp_report(state, "research_manager_report", "investment_plan", "researcher_debate")
                 self.update_agent_status("Trader", "in_progress", analyzing_symbol)
                 ui_update_needed = True
         
         # Trader plan
         if "trader_investment_plan" in chunk and chunk["trader_investment_plan"]:
             state["current_reports"]["trader_investment_plan"] = chunk["trader_investment_plan"]
+            self._stamp_report(state, "trader_investment_plan")
             self.update_reports_count()
             self.update_agent_status("Trader", "completed", analyzing_symbol)
             self.update_agent_status("Risky Analyst", "in_progress", analyzing_symbol)
@@ -778,6 +794,7 @@ class AppState:
                 if risky_content.startswith("Risky Analyst: "):
                     risky_content = risky_content[15:]  # Remove "Risky Analyst: " prefix
                 state["current_reports"]["risky_report"] = risky_content
+                self._stamp_report(state, "risky_report", "risk_debate")
                 self.update_reports_count()
                 # print(f"[STATE - {self.current_symbol}] Updated risky_report with content length: {len(risky_content)}")
                 ui_update_needed = True
@@ -793,6 +810,7 @@ class AppState:
                 if safe_content.startswith("Safe Analyst: "):
                     safe_content = safe_content[14:]  # Remove "Safe Analyst: " prefix
                 state["current_reports"]["safe_report"] = safe_content
+                self._stamp_report(state, "safe_report", "risk_debate")
                 self.update_reports_count()
                 # print(f"[STATE - {self.current_symbol}] Updated safe_report with content length: {len(safe_content)}")
                 ui_update_needed = True
@@ -808,6 +826,7 @@ class AppState:
                 if neutral_content.startswith("Neutral Analyst: "):
                     neutral_content = neutral_content[17:]  # Remove "Neutral Analyst: " prefix
                 state["current_reports"]["neutral_report"] = neutral_content
+                self._stamp_report(state, "neutral_report", "risk_debate")
                 self.update_reports_count()
                 # print(f"[STATE - {self.current_symbol}] Updated neutral_report with content length: {len(neutral_content)}")
                 ui_update_needed = True
@@ -839,6 +858,7 @@ class AppState:
                 # Set final decisions
                 state["current_reports"]["portfolio_decision"] = risk_state["judge_decision"]
                 state["current_reports"]["final_trade_decision"] = risk_state["judge_decision"]
+                self._stamp_report(state, "portfolio_decision", "final_trade_decision", "risk_debate")
                 
                 # Store extracted recommendation if available
                 if "recommended_action" in chunk:

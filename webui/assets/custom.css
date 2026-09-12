@@ -705,6 +705,38 @@ body {
     font-size: 1.4rem;
 }
 
+.report-generated-at {
+    color: #94A3B8;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.report-generated-at i {
+    color: #38BDF8;
+}
+
+.report-history-row {
+    background-color: rgba(15, 23, 42, 0.3);
+    border-radius: 8px;
+    padding: 10px 12px;
+    border: 1px solid rgba(51, 65, 85, 0.3);
+}
+
+.report-history-label {
+    color: #94A3B8;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+    display: block;
+}
+
+.report-history-selector {
+    background-color: #0F172A;
+    color: #E2E8F0;
+    border-color: #334155;
+}
+
 /* Enhanced Tabs Styling */
 .enhanced-tabs .nav-tabs {
     background: linear-gradient(135deg, #334155 0%, #1E293B 100%);

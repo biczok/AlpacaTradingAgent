@@ -243,6 +243,27 @@ def create_reports_panel():
                     ], className="text-center current-symbol-container"),
                 ], width=4)
             ], className="mb-3 pagination-row"),
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Label(
+                            [
+                                html.I(className="fas fa-history me-2"),
+                                "Past reports",
+                            ],
+                            htmlFor="report-history-selector",
+                            className="report-history-label",
+                        ),
+                        dbc.Select(
+                            id="report-history-selector",
+                            options=[{"label": "Current analysis", "value": "current"}],
+                            value="current",
+                            size="sm",
+                            className="report-history-selector",
+                        ),
+                    ], className="report-history-wrap")
+                ], width=12)
+            ], className="mb-3 report-history-row"),
             tabs,
             hidden_content_containers,
             
