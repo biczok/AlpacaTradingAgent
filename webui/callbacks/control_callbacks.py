@@ -1105,32 +1105,31 @@ def register_control_callbacks(app):
          Output("report-pagination", "max_value", allow_duplicate=True),
          Output("report-pagination", "active_page", allow_duplicate=True)],
         [Input("app-store", "data")],
+        [State("ticker-input", "value")],
         prevent_initial_call=True
     )
-    def restore_pagination_on_refresh(store_data):
+    def restore_pagination_on_refresh(store_data, ticker_value):
         """Restore pagination and symbol states after page refresh"""
-        if not store_data or not store_data.get("symbols"):
-            # No stored data, return defaults
-            print("[RESTORE] No stored data found, returning defaults")
-            return 1, 1, 1, 1
+        from webui.utils.report_history import collect_picker_symbols
 
-        symbols = store_data.get("symbols", [])
-        num_symbols = len(symbols)
+        stored = (store_data or {}).get("symbols") or []
+        if stored:
+            num_stored = len(stored)
+            if not app_state.symbol_states or len(app_state.symbol_states) != num_stored:
+                print(f"[RESTORE] Restoring symbol states for {stored} after page refresh")
+                for symbol in stored:
+                    if symbol not in app_state.symbol_states:
+                        app_state.init_symbol_state(symbol)
 
-        # Restore symbol states if they don't exist (e.g., after page refresh)
-        if not app_state.symbol_states or len(app_state.symbol_states) != num_symbols:
-            print(f"[RESTORE] Restoring symbol states for {symbols} after page refresh")
-            for symbol in symbols:
-                if symbol not in app_state.symbol_states:
-                    app_state.init_symbol_state(symbol)
+                if not app_state.current_symbol and stored:
+                    app_state.current_symbol = stored[0]
+                    print(f"[RESTORE] Set current symbol to {stored[0]}")
+            else:
+                print(f"[RESTORE] Symbol states already exist for {list(app_state.symbol_states.keys())}")
 
-            # Set current symbol to first one if none is set
-            if not app_state.current_symbol and symbols:
-                app_state.current_symbol = symbols[0]
-                print(f"[RESTORE] Set current symbol to {symbols[0]}")
-        else:
-            print(f"[RESTORE] Symbol states already exist for {list(app_state.symbol_states.keys())}")
-
+        live = list(app_state.symbol_states.keys()) if app_state.symbol_states else stored
+        symbols = collect_picker_symbols(ticker_value, live_symbols=live)
+        num_symbols = max(len(symbols), 1)
         print(f"[RESTORE] Restoring pagination: max_value={num_symbols}")
         return num_symbols, 1, num_symbols, 1
 

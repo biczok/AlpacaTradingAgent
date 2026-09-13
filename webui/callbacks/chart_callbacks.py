@@ -11,6 +11,15 @@ from datetime import datetime
 
 from webui.utils.state import app_state
 from webui.utils.charts import create_chart, create_welcome_chart
+from webui.utils.report_history import collect_picker_symbols, resolve_picker_symbol
+
+
+def _live_symbols():
+    return list(app_state.symbol_states.keys()) if app_state.symbol_states else []
+
+
+def _picker_symbols(ticker_value=None):
+    return collect_picker_symbols(ticker_value, live_symbols=_live_symbols())
 
 
 def create_symbol_button(symbol, index, is_active=False):
@@ -28,18 +37,22 @@ def register_chart_callbacks(app):
     """Register all chart-related callbacks including symbol pagination"""
     
     @app.callback(
-        Output("chart-pagination-container", "children"),
+        [Output("chart-pagination-container", "children"),
+         Output("chart-pagination", "max_value", allow_duplicate=True)],
         [Input("app-store", "data"),
-         Input("refresh-interval", "n_intervals")]
+         Input("refresh-interval", "n_intervals"),
+         Input("ticker-input", "value")],
+        prevent_initial_call="initial_duplicate"
     )
-    def update_chart_symbol_pagination(store_data, n_intervals):
+    def update_chart_symbol_pagination(store_data, n_intervals, ticker_value):
         """Update the symbol pagination buttons for charts"""
-        if not app_state.symbol_states:
-            return html.Div("No symbols available", 
+        symbols = _picker_symbols(ticker_value)
+        if not symbols:
+            empty = html.Div("No symbols available",
                           className="text-muted text-center",
                           style={"padding": "10px"})
-        
-        symbols = list(app_state.symbol_states.keys())
+            return empty, 1
+
         current_symbol = app_state.current_symbol
         
         # Find active symbol index
@@ -62,21 +75,24 @@ def register_chart_callbacks(app):
             return html.Div([
                 dbc.ButtonGroup(buttons, className="d-flex flex-wrap justify-content-center"),
                 nav_info
-            ], className="symbol-pagination-wrapper")
+            ], className="symbol-pagination-wrapper"), max(len(symbols), 1)
         else:
-            return dbc.ButtonGroup(buttons, className="d-flex justify-content-center")
+            return dbc.ButtonGroup(buttons, className="d-flex justify-content-center"), max(len(symbols), 1)
 
     @app.callback(
         [Output("chart-pagination", "active_page", allow_duplicate=True),
          Output("report-pagination", "active_page", allow_duplicate=True),
-         Output("chart-pagination-container", "children", allow_duplicate=True)],
+         Output("chart-pagination-container", "children", allow_duplicate=True),
+         Output("chart-pagination", "max_value", allow_duplicate=True),
+         Output("report-pagination", "max_value", allow_duplicate=True)],
         [Input({"type": "symbol-btn", "index": ALL, "component": "charts"}, "n_clicks")],
+        [State("ticker-input", "value")],
         prevent_initial_call=True
     )
-    def handle_chart_symbol_click(symbol_clicks):
+    def handle_chart_symbol_click(symbol_clicks, ticker_value):
         """Handle symbol button clicks for charts with immediate visual feedback"""
         if not any(symbol_clicks) or not ctx.triggered:
-            return dash.no_update, dash.no_update, dash.no_update
+            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
         
         # Find which button was clicked
         button_id = ctx.triggered[0]["prop_id"]
@@ -87,7 +103,7 @@ def register_chart_callbacks(app):
             clicked_index = button_data["index"]
             
             # Update current symbol
-            symbols = list(app_state.symbol_states.keys())
+            symbols = _picker_symbols(ticker_value)
             if 0 <= clicked_index < len(symbols):
                 app_state.current_symbol = symbols[clicked_index]
                 page_number = clicked_index + 1
@@ -112,9 +128,10 @@ def register_chart_callbacks(app):
                 else:
                     button_container = dbc.ButtonGroup(buttons, className="d-flex justify-content-center")
                 
-                return page_number, page_number, button_container
+                max_pages = max(len(symbols), 1)
+                return page_number, page_number, button_container, max_pages, max_pages
         
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     @app.callback(
         [Output("chart-container", "figure"),
@@ -125,25 +142,20 @@ def register_chart_callbacks(app):
          Input("period-1mo", "n_clicks"),
          Input("period-1y", "n_clicks"),
          Input("chart-pagination", "active_page"),
-         Input("manual-chart-refresh", "n_clicks")],
+         Input("manual-chart-refresh", "n_clicks"),
+         Input("ticker-input", "value")],
         [State("chart-store", "data")]
     )
-    def update_chart(n_1d, n_1w, n_1mo, n_1y, active_page, manual_refresh, chart_store_data):
+    def update_chart(n_1d, n_1w, n_1mo, n_1y, active_page, manual_refresh, ticker_value, chart_store_data):
         """Update the chart based on period selection or ticker change"""
-        # print(f"[CHART] Called with active_page={active_page}, symbol_states={list(app_state.symbol_states.keys()) if app_state.symbol_states else []}")
-        
-        if not app_state.symbol_states or not active_page:
-            # print(f"[CHART] No symbol states or no active page, returning welcome chart")
+        symbol = resolve_picker_symbol(
+            active_page or 1,
+            ticker_value,
+            live_symbols=_live_symbols(),
+            current_symbol=app_state.current_symbol,
+        )
+        if not symbol:
             return create_welcome_chart(), "", chart_store_data
-
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            # print(f"[CHART] Page index {active_page} out of range for {len(symbols_list)} symbols")
-            return create_welcome_chart(), "Page index out of range", chart_store_data
-
-        symbol = symbols_list[active_page - 1]
-        # print(f"[CHART] Selected symbol: {symbol} (page {active_page})")
 
         # Determine which input triggered the callback
         triggered_prop = ctx.triggered[0]["prop_id"] if ctx.triggered else None

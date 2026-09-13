@@ -13,8 +13,10 @@ from webui.utils.prompt_capture import get_agent_prompt
 from webui.utils.report_rendering import create_rich_report_content
 from webui.utils.report_history import (
     build_history_options,
+    collect_picker_symbols,
     create_generated_at_badge,
     load_historical_view,
+    resolve_picker_symbol,
 )
 
 
@@ -151,19 +153,22 @@ def normalize_market_markdown_sections(content):
     return normalized.strip()
 
 
-def _parse_ticker_symbols(value):
-    return [symbol.strip() for symbol in (value or "").replace(";", ",").split(",") if symbol.strip()]
+def _live_symbols():
+    return list(app_state.symbol_states.keys()) if app_state.symbol_states else []
+
+
+def _picker_symbols(ticker_value=None):
+    return collect_picker_symbols(ticker_value, live_symbols=_live_symbols())
 
 
 def resolve_report_symbol(active_page, ticker_value=None):
     """Resolve the symbol currently shown in the reports panel."""
-    symbols = list(app_state.symbol_states.keys()) if app_state.symbol_states else []
-    if symbols and active_page and 1 <= active_page <= len(symbols):
-        return symbols[active_page - 1]
-    if app_state.current_symbol:
-        return app_state.current_symbol
-    parsed = _parse_ticker_symbols(ticker_value)
-    return parsed[0] if parsed else None
+    return resolve_picker_symbol(
+        active_page,
+        ticker_value,
+        live_symbols=_live_symbols(),
+        current_symbol=app_state.current_symbol,
+    )
 
 
 def _live_generated_at(state, report_type):
@@ -278,18 +283,22 @@ def register_report_callbacks(app):
     """Register all report-related callbacks including symbol pagination"""
 
     @app.callback(
-        Output("report-pagination-container", "children"),
+        [Output("report-pagination-container", "children"),
+         Output("report-pagination", "max_value", allow_duplicate=True)],
         [Input("app-store", "data"),
-         Input("refresh-interval", "n_intervals")]
+         Input("refresh-interval", "n_intervals"),
+         Input("ticker-input", "value")],
+        prevent_initial_call="initial_duplicate"
     )
-    def update_report_symbol_pagination(store_data, n_intervals):
+    def update_report_symbol_pagination(store_data, n_intervals, ticker_value):
         """Update the symbol pagination buttons for reports"""
-        if not app_state.symbol_states:
-            return html.Div("No symbols available", 
+        symbols = _picker_symbols(ticker_value)
+        if not symbols:
+            empty = html.Div("No symbols available",
                           className="text-muted text-center",
                           style={"padding": "10px"})
-        
-        symbols = list(app_state.symbol_states.keys())
+            return empty, 1
+
         current_symbol = app_state.current_symbol
         
         # Find active symbol index
@@ -312,21 +321,24 @@ def register_report_callbacks(app):
             return html.Div([
                 dbc.ButtonGroup(buttons, className="d-flex flex-wrap justify-content-center"),
                 nav_info
-            ], className="symbol-pagination-wrapper")
+            ], className="symbol-pagination-wrapper"), max(len(symbols), 1)
         else:
-            return dbc.ButtonGroup(buttons, className="d-flex justify-content-center")
+            return dbc.ButtonGroup(buttons, className="d-flex justify-content-center"), max(len(symbols), 1)
 
     @app.callback(
         [Output("report-pagination", "active_page", allow_duplicate=True),
          Output("chart-pagination", "active_page", allow_duplicate=True),
-         Output("report-pagination-container", "children", allow_duplicate=True)],
+         Output("report-pagination-container", "children", allow_duplicate=True),
+         Output("report-pagination", "max_value", allow_duplicate=True),
+         Output("chart-pagination", "max_value", allow_duplicate=True)],
         [Input({"type": "symbol-btn", "index": ALL, "component": "reports"}, "n_clicks")],
+        [State("ticker-input", "value")],
         prevent_initial_call=True
     )
-    def handle_report_symbol_click(symbol_clicks):
+    def handle_report_symbol_click(symbol_clicks, ticker_value):
         """Handle symbol button clicks for reports with immediate visual feedback"""
         if not any(symbol_clicks) or not ctx.triggered:
-            return dash.no_update, dash.no_update, dash.no_update
+            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
         
         # Find which button was clicked
         button_id = ctx.triggered[0]["prop_id"]
@@ -337,7 +349,7 @@ def register_report_callbacks(app):
             clicked_index = button_data["index"]
             
             # Update current symbol
-            symbols = list(app_state.symbol_states.keys())
+            symbols = _picker_symbols(ticker_value)
             if 0 <= clicked_index < len(symbols):
                 app_state.current_symbol = symbols[clicked_index]
                 page_number = clicked_index + 1
@@ -362,9 +374,10 @@ def register_report_callbacks(app):
                 else:
                     button_container = dbc.ButtonGroup(buttons, className="d-flex justify-content-center")
                 
-                return page_number, page_number, button_container
+                max_pages = max(len(symbols), 1)
+                return page_number, page_number, button_container, max_pages, max_pages
         
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     @app.callback(
         Output("researcher-debate-tab-content", "children"),
@@ -387,17 +400,9 @@ def register_report_callbacks(app):
             debate_state = view["investment_debate_state"]
             generated_at = (view.get("timestamps") or {}).get("researcher_debate") or view.get("started_at")
         else:
-            if not app_state.symbol_states or not active_page:
-                return create_markdown_content("", "No researcher debate available yet.")
-
-            # Safeguard against accessing invalid page index (e.g., after page refresh)
-            symbols_list = list(app_state.symbol_states.keys())
-            if active_page > len(symbols_list):
-                return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
-
-            state = app_state.get_state(symbol)
+            state = app_state.get_state(symbol) if symbol else None
             if not state:
-                return create_markdown_content("", f"No active analysis for {symbol}. Researcher debate will appear here once analysis starts.")
+                return create_markdown_content("", "No researcher debate available yet.")
 
             debate_state = state.get("investment_debate_state")
             generated_at = _live_generated_at(state, "researcher_debate")
@@ -581,17 +586,9 @@ def register_report_callbacks(app):
             risk_debate_state = view["risk_debate_state"]
             generated_at = (view.get("timestamps") or {}).get("risk_debate") or view.get("started_at")
         else:
-            if not app_state.symbol_states or not active_page:
-                return create_markdown_content("", "No risk debate available yet.")
-
-            # Safeguard against accessing invalid page index (e.g., after page refresh)
-            symbols_list = list(app_state.symbol_states.keys())
-            if active_page > len(symbols_list):
-                return create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")
-
-            state = app_state.get_state(symbol)
+            state = app_state.get_state(symbol) if symbol else None
             if not state:
-                return create_markdown_content("", f"No active analysis for {symbol}. Risk debate will appear here once analysis starts.")
+                return create_markdown_content("", "No risk debate available yet.")
 
             risk_debate_state = state.get("risk_debate_state")
             generated_at = _live_generated_at(state, "risk_debate")
@@ -898,19 +895,9 @@ def register_report_callbacks(app):
                 ),
             )
 
-        if not app_state.symbol_states or not active_page:
-            # print(f"[REPORTS] No symbol states or no active page, returning default content")
-            return [create_markdown_content("", "No analysis available yet.")] * 8
-        
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            return [create_markdown_content("", "Page index out of range. Please refresh or restart analysis.")] * 8
-        # print(f"[REPORTS] Selected symbol: {symbol} (page {active_page})")
-        state = app_state.get_state(symbol)
-        
+        state = app_state.get_state(symbol) if symbol else None
         if not state:
-            return [create_markdown_content("", "No data for this symbol.")] * 8
+            return [create_markdown_content("", "No analysis available yet.")] * 8
             
         reports = state["current_reports"]
         agent_statuses = state["agent_statuses"]
@@ -983,23 +970,16 @@ def register_report_callbacks(app):
     @app.callback(
         Output("decision-summary", "children"),
         [Input("report-pagination", "active_page"),
-         Input("medium-refresh-interval", "n_intervals")]
+         Input("medium-refresh-interval", "n_intervals")],
+        [State("ticker-input", "value")]
     )
-    def update_decision_summary(active_page, n_intervals):
+    def update_decision_summary(active_page, n_intervals, ticker_value):
         """Update the decision summary"""
-        if not app_state.symbol_states or not active_page:
-            return "Analysis not complete yet."
-
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            return "Page index out of range. Please refresh or restart analysis."
-
-        symbol = symbols_list[active_page - 1]
-        state = app_state.get_state(symbol)
+        symbol = resolve_report_symbol(active_page, ticker_value)
+        state = app_state.get_state(symbol) if symbol else None
 
         if not state:
-            return "No data for this symbol."
+            return "Analysis not complete yet."
 
         reports = state["current_reports"]
         final_report_content = reports.get("final_trade_decision")
@@ -1072,18 +1052,13 @@ def register_report_callbacks(app):
 
     @app.callback(
         Output("current-symbol-report-display", "children"),
-        [Input("report-pagination", "active_page")]
+        [Input("report-pagination", "active_page"),
+         Input("ticker-input", "value")]
     )
-    def update_report_display_text(active_page):
-        if not app_state.symbol_states or not active_page:
+    def update_report_display_text(active_page, ticker_value):
+        symbol = resolve_report_symbol(active_page, ticker_value)
+        if not symbol:
             return ""
-        
-        # Safeguard against accessing invalid page index (e.g., after page refresh)
-        symbols_list = list(app_state.symbol_states.keys())
-        if active_page > len(symbols_list):
-            return "Invalid page"
-        
-        symbol = symbols_list[active_page - 1]
         return f"📊 {symbol}"
 
     @app.callback(

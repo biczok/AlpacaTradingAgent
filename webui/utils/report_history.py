@@ -20,6 +20,79 @@ def get_eval_results_dir() -> str:
         return "eval_results"
 
 
+def parse_ticker_symbols(value: Optional[str]) -> List[str]:
+    return [symbol.strip() for symbol in (value or "").replace(";", ",").split(",") if symbol.strip()]
+
+
+def _picker_key(symbol: str) -> str:
+    from tradingagents.run_logger import _sanitize_for_path
+
+    return _sanitize_for_path(symbol).upper()
+
+
+def collect_picker_symbols(
+    ticker_value: Optional[str] = None,
+    live_symbols: Optional[List[str]] = None,
+    eval_results_dir: Optional[str] = None,
+) -> List[str]:
+    """Symbols for chart/report pickers: live session, config tickers, then saved runs."""
+    ordered: List[str] = []
+    seen = set()
+
+    def add(symbol: Optional[str]) -> None:
+        if not symbol:
+            return
+        key = _picker_key(symbol)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        ordered.append(symbol)
+
+    for symbol in live_symbols or []:
+        add(symbol)
+    for symbol in parse_ticker_symbols(ticker_value):
+        add(symbol)
+
+    cache_root = eval_results_dir or get_eval_results_dir()
+    cache_key = f"symbols::{cache_root}"
+    now = time.monotonic()
+    cached = _LIST_CACHE.get(cache_key)
+    if cached and now - cached[0] < _LIST_TTL_SECONDS:
+        saved = cached[1]
+    else:
+        from tradingagents.run_logger import list_symbols_with_runs
+
+        saved = list_symbols_with_runs(eval_results_dir=cache_root)
+        _LIST_CACHE[cache_key] = (now, saved)
+
+    for symbol in saved:
+        add(symbol)
+    return ordered
+
+
+def resolve_picker_symbol(
+    active_page,
+    ticker_value: Optional[str] = None,
+    live_symbols: Optional[List[str]] = None,
+    current_symbol: Optional[str] = None,
+    eval_results_dir: Optional[str] = None,
+) -> Optional[str]:
+    symbols = collect_picker_symbols(
+        ticker_value,
+        live_symbols=live_symbols,
+        eval_results_dir=eval_results_dir,
+    )
+    try:
+        page = int(active_page)
+    except (TypeError, ValueError):
+        page = 0
+    if symbols and 1 <= page <= len(symbols):
+        return symbols[page - 1]
+    if current_symbol:
+        return current_symbol
+    return symbols[0] if symbols else None
+
+
 def format_report_timestamp(value: Any) -> Optional[str]:
     """Format unix seconds or ISO datetimes for display in local time."""
     if value in (None, "", 0):

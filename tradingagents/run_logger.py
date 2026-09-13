@@ -503,6 +503,26 @@ def list_symbol_runs(
     return summaries[: max(int(limit), 0)]
 
 
+def list_symbols_with_runs(eval_results_dir: str = "eval_results") -> List[str]:
+    """Return symbols that have at least one persisted run JSON on disk."""
+    root = Path(eval_results_dir)
+    if not root.is_dir():
+        return []
+
+    symbols: List[str] = []
+    seen = set()
+    for runs_dir in sorted(root.glob("*/TradingAgentsStrategy_logs/runs")):
+        if next(runs_dir.glob("*.json"), None) is None:
+            continue
+        folder = runs_dir.parent.parent.name
+        key = folder.upper()
+        if not folder or key in seen:
+            continue
+        seen.add(key)
+        symbols.append(folder)
+    return symbols
+
+
 def load_run_payload(
     symbol: str,
     run_id: str,

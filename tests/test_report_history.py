@@ -7,9 +7,14 @@ from pathlib import Path
 from tradingagents.run_logger import (
     extract_reports_from_run,
     list_symbol_runs,
+    list_symbols_with_runs,
     load_run_payload,
 )
-from webui.utils.report_history import format_report_timestamp
+from webui.utils.report_history import (
+    collect_picker_symbols,
+    format_report_timestamp,
+    resolve_picker_symbol,
+)
 
 
 def _write_run(root, symbol, run_id, trade_date, started_at, status="completed", **extra):
@@ -128,6 +133,59 @@ class ReportHistoryLoaderTests(unittest.TestCase):
     def test_missing_directory_is_empty(self):
         self.assertEqual(list_symbol_runs("ZZZZ", eval_results_dir="no_such_dir"), [])
         self.assertIsNone(load_run_payload("ZZZZ", "missing", eval_results_dir="no_such_dir"))
+
+    def test_lists_symbols_that_have_run_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            _write_run(
+                root, "AAPL", "run-1", "2026-09-12",
+                "2026-09-12T10:00:00+00:00",
+                snapshots={"final_state": {"market_report": "body"}},
+            )
+            _write_run(
+                root, "BTC_USD", "run-btc", "2026-09-12",
+                "2026-09-12T11:00:00+00:00",
+            )
+            empty_dir = Path(root) / "MSFT" / "TradingAgentsStrategy_logs" / "runs"
+            empty_dir.mkdir(parents=True)
+
+            symbols = list_symbols_with_runs(eval_results_dir=root)
+
+        self.assertEqual(symbols, ["AAPL", "BTC_USD"])
+
+
+class PickerSymbolTests(unittest.TestCase):
+    def test_merges_live_config_and_saved_symbols_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as root:
+            _write_run(
+                root, "NVDA", "run-1", "2026-09-12",
+                "2026-09-12T10:00:00+00:00",
+            )
+            _write_run(
+                root, "AAPL", "run-2", "2026-09-12",
+                "2026-09-12T11:00:00+00:00",
+            )
+            symbols = collect_picker_symbols(
+                "AAPL, GOOG",
+                live_symbols=["INTC", "AAPL"],
+                eval_results_dir=root,
+            )
+
+        self.assertEqual(symbols, ["INTC", "AAPL", "GOOG", "NVDA"])
+
+    def test_resolve_picker_uses_page_index_into_merged_list(self):
+        with tempfile.TemporaryDirectory() as root:
+            _write_run(
+                root, "MSFT", "run-1", "2026-09-12",
+                "2026-09-12T10:00:00+00:00",
+            )
+            symbol = resolve_picker_symbol(
+                3,
+                "INTC, GOOG",
+                live_symbols=["INTC"],
+                eval_results_dir=root,
+            )
+
+        self.assertEqual(symbol, "MSFT")
 
 
 class TimestampFormattingTests(unittest.TestCase):
