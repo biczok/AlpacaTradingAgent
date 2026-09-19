@@ -165,6 +165,25 @@ def is_market_open(target_datetime: datetime.datetime = None, include_premarket:
     return True, "Market is active"
 
 
+def scheduled_datetime_for_hour(target_hour: int, day: datetime.datetime) -> datetime.datetime:
+    """Wall-clock time on `day` when `target_hour` should fire (US/Eastern)."""
+    day = _coerce_to_eastern(day)
+    target_minute = 10 if int(target_hour) == 9 else 0
+    naive = datetime.datetime(day.year, day.month, day.day, int(target_hour), target_minute, 0)
+    eastern = _get_eastern_timezone()
+    try:
+        return eastern.localize(naive, is_dst=None)
+    except pytz.AmbiguousTimeError:
+        return eastern.localize(naive, is_dst=True)
+    except pytz.NonExistentTimeError:
+        return eastern.localize(naive) + datetime.timedelta(hours=1)
+
+
+def slot_fire_key(slot_dt: datetime.datetime, hour: int):
+    slot_dt = _coerce_to_eastern(slot_dt)
+    return (slot_dt.date().isoformat(), int(hour))
+
+
 def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime = None) -> datetime.datetime:
     """
     Get the next market datetime for the specified hour.
@@ -179,14 +198,13 @@ def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime 
         Next datetime when market will be open at the target hour
     """
     from_datetime = _coerce_to_eastern(from_datetime)
-    
-    # 20 minutes before open for hour 9 (9:10 AM EST), top of hour for other hours
-    target_minute = 10 if target_hour == 9 else 0
-    target_dt = from_datetime.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-    
+    candidate_day = from_datetime
+    target_dt = scheduled_datetime_for_hour(target_hour, candidate_day)
+
     # If the target time today has already passed, start with tomorrow
     if target_dt <= from_datetime:
-        target_dt += datetime.timedelta(days=1)
+        candidate_day = candidate_day + datetime.timedelta(days=1)
+        target_dt = scheduled_datetime_for_hour(target_hour, candidate_day)
         
     # Keep advancing until we find a valid market day
     max_attempts = 10  # Prevent infinite loops
@@ -197,12 +215,77 @@ def get_next_market_datetime(target_hour: int, from_datetime: datetime.datetime 
         if is_day:
             return target_dt
         
-        # Move to next day
-        target_dt += datetime.timedelta(days=1)
+        candidate_day = candidate_day + datetime.timedelta(days=1)
+        target_dt = scheduled_datetime_for_hour(target_hour, candidate_day)
         attempts += 1
     
     # Fallback - return the target datetime even if we couldn't validate
     return target_dt
+
+
+CATCH_UP_GRACE = datetime.timedelta(minutes=30)
+
+
+def get_due_market_slot(
+    hours: List[int],
+    from_datetime: datetime.datetime = None,
+    fired=None,
+    catch_up_while_open: bool = True,
+):
+    """
+    Return the most recent scheduled slot that should run now, or None.
+
+    A slot is due when its Eastern wall-clock time has been reached on a
+    trading day and either the analysis window is still open or we are
+    within CATCH_UP_GRACE of the slot. Already-fired (date, hour) keys are skipped.
+    """
+    if not hours:
+        return None
+
+    now = _coerce_to_eastern(from_datetime)
+    fired = fired or set()
+    is_day, _ = is_market_day(now)
+    if not is_day:
+        return None
+
+    is_open, _ = is_market_open(now)
+    due = []
+    for hour in sorted(hours):
+        slot = scheduled_datetime_for_hour(hour, now)
+        if slot_fire_key(slot, hour) in fired:
+            continue
+        if slot > now:
+            continue
+        if (catch_up_while_open and is_open) or (now - slot) <= CATCH_UP_GRACE:
+            due.append((hour, slot))
+
+    if not due:
+        return None
+    return due[-1]
+
+
+def market_hour_schedule_action(
+    hours: List[int],
+    from_datetime: datetime.datetime = None,
+    fired=None,
+):
+    """
+    Decide whether to run a due slot or wait for the next one.
+
+    Returns (action, hour, slot_datetime) where action is "run" or "wait".
+    """
+    if not hours:
+        raise ValueError("No market hours configured")
+
+    now = _coerce_to_eastern(from_datetime)
+    due = get_due_market_slot(hours, now, fired)
+    if due:
+        return "run", due[0], due[1]
+
+    upcoming = [(hour, get_next_market_datetime(hour, now)) for hour in hours]
+    upcoming.sort(key=lambda item: item[1])
+    hour, slot = upcoming[0]
+    return "wait", hour, slot
 
 
 def format_market_hours_info(hours: List[int]) -> Dict[str, Any]:

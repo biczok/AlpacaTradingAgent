@@ -73,6 +73,7 @@ class AppState:
         self.market_hour_config = {}  # Store analysis configuration for market hour trading
         self.market_hour_thread = None
         self.stop_market_hour = False  # Flag to stop market hour scheduling
+        self.market_hour_fired = set()
         self.trade_enabled = False
         self.trade_amount = 1000
         self.trade_occurred = False
@@ -501,6 +502,7 @@ class AppState:
         self.market_hour_config = config
         self.market_hours = hours
         self.stop_market_hour = False
+        self.market_hour_fired = set()
         print(f"[STATE] Starting market hour mode with {len(symbols)} symbols, hours: {hours}")
 
     def stop_market_hour_mode(self):
