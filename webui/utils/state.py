@@ -74,6 +74,8 @@ class AppState:
         self.market_hour_thread = None
         self.stop_market_hour = False  # Flag to stop market hour scheduling
         self.market_hour_fired = set()
+        self.control_n_clicks_seen = 0
+        self.control_button_mode = None
         self.trade_enabled = False
         self.trade_amount = 1000
         self.trade_occurred = False
@@ -506,11 +508,17 @@ class AppState:
         print(f"[STATE] Starting market hour mode with {len(symbols)} symbols, hours: {hours}")
 
     def stop_market_hour_mode(self):
-        """Stop the market hour trading mode."""
+        """Stop the market hour trading mode and forget it across restarts."""
         self.stop_market_hour = True
         self.market_hour_enabled = False
         self.analysis_running = False
+        self.control_button_mode = None
         print("[STATE] Stopping market hour mode")
+        try:
+            from webui.utils.market_hour_job import clear_market_hour_job
+            clear_market_hour_job()
+        except Exception:
+            pass
     
     def start_new_session_for_symbol(self, symbol):
         """Start a new analysis session for an existing symbol."""

@@ -120,6 +120,9 @@ def run_app(port=7860, share=False, server_name="127.0.0.1", debug=False, max_th
     # Optionally also silence Dash's callback exceptions logger
     logging.getLogger("dash.callback").setLevel(logging.ERROR)
     
+    from webui.utils.market_hour_job import resume_market_hour_job
+    resume_market_hour_job()
+
     # Run the app
     app.run(
         port=port,

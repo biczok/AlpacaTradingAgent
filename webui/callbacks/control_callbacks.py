@@ -643,7 +643,12 @@ def register_control_callbacks(app):
     )
     def update_control_button(n_intervals):
         """Update the control button (Start/Stop) based on current state"""
-        if app_state.analysis_running or app_state.loop_enabled or app_state.market_hour_enabled:
+        running = bool(app_state.analysis_running or app_state.loop_enabled or app_state.market_hour_enabled)
+        desired = "stop" if running else "start"
+        if app_state.control_button_mode == desired:
+            return dash.no_update
+        app_state.control_button_mode = desired
+        if running:
             return dbc.Button(
                 [html.I(className="fa-solid fa-stop me-2"), "Stop Analysis"],
                 id="control-btn",
@@ -784,9 +789,14 @@ def register_control_callbacks(app):
         if triggered_prop == "control-btn.children":
             return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-        # Ignore callbacks caused by the periodic re-rendering of the button itself
-        if triggered_prop == "control-btn.n_clicks" and (n_clicks is None or n_clicks == 0):
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        # Ignore callbacks caused by the periodic re-rendering of the button itself.
+        # Replacing the button re-sends the same n_clicks and was cancelling the scheduler.
+        if triggered_prop == "control-btn.n_clicks":
+            from webui.utils.market_hour_job import accept_control_click
+            accepted, seen = accept_control_click(n_clicks, app_state.control_n_clicks_seen)
+            app_state.control_n_clicks_seen = seen
+            if not accepted:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
         # Real user click handling begins here
         if n_clicks is None:
@@ -891,102 +901,60 @@ def register_control_callbacks(app):
         for symbol in symbols:
             app_state.init_symbol_state(symbol)
 
+        if market_hour_enabled:
+            from webui.utils.market_hour_job import start_market_hour_thread
+            job = {
+                "symbols": symbols,
+                "market_hours": market_hours_list,
+                "analysts_market": analysts_market,
+                "analysts_social": analysts_social,
+                "analysts_news": analysts_news,
+                "analysts_fundamentals": analysts_fundamentals,
+                "analysts_macro": analysts_macro,
+                "research_depth": research_depth,
+                "allow_shorts": allow_shorts,
+                "llm_provider": llm_provider,
+                "backend_url": backend_url,
+                "output_language": output_language,
+                "checkpoint_enabled": checkpoint_enabled,
+                "quick_llm": quick_llm,
+                "deep_llm": deep_llm,
+                "quick_llm_params": quick_llm_params,
+                "deep_llm_params": deep_llm_params,
+                "google_thinking_level": provider_settings.get("google_thinking_level"),
+                "anthropic_effort": provider_settings.get("anthropic_effort"),
+                "trade_enabled": trade_enabled,
+                "trade_amount": trade_amount,
+            }
+            app_state.control_button_mode = None
+            start_market_hour_thread(job)
+            mode_text = "market hour mode"
+            formatted_hours = []
+            for hour in market_hours_list:
+                if hour < 12:
+                    formatted_hours.append(f"{hour}:00 AM")
+                else:
+                    formatted_hours.append(f"{hour-12}:00 PM" if hour > 12 else "12:00 PM")
+            interval_text = f" (at {' and '.join(formatted_hours)} EST/EDT)"
+            store_data = {
+                "analysis_started": True,
+                "timestamp": time.time(),
+                "symbols": symbols,
+                "num_symbols": num_symbols,
+                "mode": mode_text,
+                "interval_text": interval_text,
+            }
+            return (
+                f"Starting real-time analysis for {', '.join(symbols)} in {mode_text}{interval_text} using current market data...",
+                store_data,
+                num_symbols,
+                1,
+                num_symbols,
+                1,
+            )
+
         def analysis_thread():
-            if market_hour_enabled:
-                # Start market hour mode with scheduling logic
-                market_hour_config = {
-                    'analysts_market': analysts_market,
-                    'analysts_social': analysts_social,
-                    'analysts_news': analysts_news,
-                    'analysts_fundamentals': analysts_fundamentals,
-                    'analysts_macro': analysts_macro,
-                    'research_depth': research_depth,
-                    'allow_shorts': allow_shorts,
-                    'llm_provider': llm_provider,
-                    'backend_url': backend_url,
-                    'output_language': output_language,
-                    'checkpoint_enabled': checkpoint_enabled,
-                    'quick_llm': quick_llm,
-                    'deep_llm': deep_llm,
-                    'quick_llm_params': quick_llm_params,
-                    'deep_llm_params': deep_llm_params,
-                    **provider_settings,
-                    'trade_enabled': trade_enabled,
-                    'trade_amount': trade_amount
-                }
-                app_state.start_market_hour_mode(symbols, market_hour_config, market_hours_list)
-
-                # Market hour scheduling loop
-                import traceback
-                from webui.utils.market_hours import market_hour_schedule_action, slot_fire_key
-
-                last_logged_slot = None
-                while not app_state.stop_market_hour:
-                    try:
-                        action, next_hour, next_dt = market_hour_schedule_action(
-                            app_state.market_hours,
-                            fired=app_state.market_hour_fired,
-                        )
-                    except Exception as exc:
-                        print(f"[MARKET_HOUR] Scheduler failed to compute the next slot: {exc}")
-                        traceback.print_exc()
-                        time.sleep(30)
-                        continue
-
-                    slot_label = next_dt.strftime('%A, %B %d at %I:%M %p %Z')
-
-                    if action == "wait":
-                        log_key = (next_hour, slot_label)
-                        if last_logged_slot != log_key:
-                            print(f"[MARKET_HOUR] Next execution: {slot_label} (Hour {next_hour})")
-                            last_logged_slot = log_key
-                        remaining = (next_dt - datetime.now(timezone.utc)).total_seconds()
-                        sleep_for = 1 if remaining <= 90 else 30
-                        time.sleep(min(sleep_for, remaining) if remaining > 0 else 1)
-                        continue
-
-                    fire_key = slot_fire_key(next_dt, next_hour)
-                    print(f"[MARKET_HOUR] Starting analysis for {slot_label} (Hour {next_hour})")
-
-                    # Reset states for new analysis
-                    app_state.reset_for_loop()
-
-                    # Initialize symbol states
-                    for symbol in symbols:
-                        app_state.init_symbol_state(symbol)
-
-                    # Add symbols to queue and run analysis
-                    app_state.add_symbols_to_queue(symbols)
-
-                    try:
-                        while app_state.analysis_queue and not app_state.stop_market_hour:
-                            symbol = app_state.get_next_symbol()
-                            if symbol:
-                                print(f"[MARKET_HOUR] Analyzing {symbol} at {slot_label}...")
-                                start_analysis(
-                                    symbol,
-                                    analysts_market, analysts_social, analysts_news, analysts_fundamentals, analysts_macro,
-                                    research_depth, allow_shorts, quick_llm, deep_llm,
-                                    quick_llm_params, deep_llm_params,
-                                    llm_provider=llm_provider,
-                                    backend_url=backend_url,
-                                    output_language=output_language,
-                                    checkpoint_enabled=checkpoint_enabled,
-                                    provider_settings=provider_settings,
-                                )
-
-                                if app_state.stop_market_hour:
-                                    break
-                    except Exception as exc:
-                        print(f"[MARKET_HOUR] Analysis failed for {slot_label}: {exc}")
-                        traceback.print_exc()
-                    finally:
-                        app_state.market_hour_fired.add(fire_key)
-
-                    if not app_state.stop_market_hour:
-                        print(f"[MARKET_HOUR] Analysis completed for {slot_label}. Waiting for next execution time.")
-
-            elif loop_enabled:
+            if loop_enabled:
                 # Start loop mode
                 loop_config = {
                     'analysts_market': analysts_market,
