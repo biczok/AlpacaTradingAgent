@@ -11,6 +11,10 @@ from webui.components.ui import render_researcher_debate, render_risk_debate
 from webui.utils.report_validator import validate_reports_for_ui
 from webui.utils.prompt_capture import get_agent_prompt
 from webui.utils.report_rendering import create_rich_report_content
+from webui.utils.debate_refresh import (
+    debate_content_fingerprint,
+    skip_unchanged_interval_render,
+)
 from webui.utils.report_history import (
     build_history_options,
     collect_picker_symbols,
@@ -392,23 +396,32 @@ def register_report_callbacks(app):
         generated_at = None
         debate_state = None
         viewing_history = bool(history_value and history_value != "current")
+        empty_reason = None
 
         if viewing_history:
             view = load_historical_view(symbol, history_value)
             if not view or not view.get("investment_debate_state"):
-                return create_markdown_content("", "No researcher debate was saved for this past run.")
-            debate_state = view["investment_debate_state"]
-            generated_at = (view.get("timestamps") or {}).get("researcher_debate") or view.get("started_at")
+                empty_reason = "No researcher debate was saved for this past run."
+            else:
+                debate_state = view["investment_debate_state"]
+                generated_at = (view.get("timestamps") or {}).get("researcher_debate") or view.get("started_at")
         else:
             state = app_state.get_state(symbol) if symbol else None
             if not state:
-                return create_markdown_content("", "No researcher debate available yet.")
+                empty_reason = "No researcher debate available yet."
+            else:
+                debate_state = state.get("investment_debate_state")
+                generated_at = _live_generated_at(state, "researcher_debate")
 
-            debate_state = state.get("investment_debate_state")
-            generated_at = _live_generated_at(state, "researcher_debate")
+        if not empty_reason and (not debate_state or not debate_state.get("history")):
+            empty_reason = "Researcher debate will begin once analysis starts."
 
-        if not debate_state or not debate_state.get("history"):
-            return create_markdown_content("", "Researcher debate will begin once analysis starts.")
+        fingerprint = debate_content_fingerprint(symbol, history_value, debate_state, empty_reason)
+        if skip_unchanged_interval_render("researcher-debate", fingerprint, ctx.triggered_id):
+            return dash.no_update
+
+        if empty_reason:
+            return create_markdown_content("", empty_reason)
 
         debate_components = []
         
@@ -553,6 +566,8 @@ def register_report_callbacks(app):
         return _with_generated_at(
             html.Div(
                 debate_components,
+                id="researcher-debate-scroll",
+                className="debate-scroll-pane",
                 style={
                     "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
                     "border-radius": "8px",
@@ -578,23 +593,32 @@ def register_report_callbacks(app):
         generated_at = None
         risk_debate_state = None
         viewing_history = bool(history_value and history_value != "current")
+        empty_reason = None
 
         if viewing_history:
             view = load_historical_view(symbol, history_value)
             if not view or not view.get("risk_debate_state"):
-                return create_markdown_content("", "No risk debate was saved for this past run.")
-            risk_debate_state = view["risk_debate_state"]
-            generated_at = (view.get("timestamps") or {}).get("risk_debate") or view.get("started_at")
+                empty_reason = "No risk debate was saved for this past run."
+            else:
+                risk_debate_state = view["risk_debate_state"]
+                generated_at = (view.get("timestamps") or {}).get("risk_debate") or view.get("started_at")
         else:
             state = app_state.get_state(symbol) if symbol else None
             if not state:
-                return create_markdown_content("", "No risk debate available yet.")
+                empty_reason = "No risk debate available yet."
+            else:
+                risk_debate_state = state.get("risk_debate_state")
+                generated_at = _live_generated_at(state, "risk_debate")
 
-            risk_debate_state = state.get("risk_debate_state")
-            generated_at = _live_generated_at(state, "risk_debate")
+        if not empty_reason and (not risk_debate_state or not risk_debate_state.get("history")):
+            empty_reason = "Risk debate will begin once analysis starts."
 
-        if not risk_debate_state or not risk_debate_state.get("history"):
-            return create_markdown_content("", "Risk debate will begin once analysis starts.")
+        fingerprint = debate_content_fingerprint(symbol, history_value, risk_debate_state, empty_reason)
+        if skip_unchanged_interval_render("risk-debate", fingerprint, ctx.triggered_id):
+            return dash.no_update
+
+        if empty_reason:
+            return create_markdown_content("", empty_reason)
 
         debate_components = []
         
@@ -799,6 +823,8 @@ def register_report_callbacks(app):
         return _with_generated_at(
             html.Div(
                 debate_components,
+                id="risk-debate-scroll",
+                className="debate-scroll-pane",
                 style={
                     "background": "linear-gradient(135deg, #0F172A 0%, #1E293B 100%)",
                     "border-radius": "8px",
